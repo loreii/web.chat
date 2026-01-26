@@ -20,193 +20,185 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Secure P2P - Private Messenger</title>
+    <title>Resilient P2P Private Messenger</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
-        :root { --bg: #121212; --card: #1e1e1e; --text: #e0e0e0; --primary: #007bff; --accent: #28a745; --danger: #dc3545; --group-tag: #3d3d3d; }
-        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; height: 100vh; overflow: hidden; }
-        
-        /* Sidebar */
-        #sidebar { width: 300px; background: #181818; border-right: 1px solid #333; display: flex; flex-direction: column; padding: 15px; z-index: 10; }
+        :root { --bg: #0f0f0f; --card: #1a1a1a; --text: #e0e0e0; --primary: #007bff; --accent: #28a745; --danger: #dc3545; }
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; height: 100vh; overflow: hidden; }
+
+        /* Layout */
+        #sidebar { width: 300px; background: #141414; border-right: 1px solid #333; display: flex; flex-direction: column; padding: 15px; z-index: 10; }
+        #main { flex: 1; display: flex; flex-direction: column; padding: 20px; position: relative; }
+
+        /* UI Elements */
         .sidebar-header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
-        .burger-btn { font-size: 24px; cursor: pointer; background: none; border: none; color: white; padding: 5px; }
-        
-        /* Lists & Items */
-        .section-label { font-size: 0.7em; text-transform: uppercase; color: #666; letter-spacing: 1px; margin: 15px 0 8px 5px; font-weight: bold; }
-        .address-book-item { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer; transition: 0.2s; margin-bottom: 5px; background: #252525; border: 2px solid transparent; }
-        .address-book-item.active-session { border-color: var(--accent); }
+        .burger-btn { font-size: 24px; cursor: pointer; background: none; border: none; color: white; }
+        .section-label { font-size: 0.7em; text-transform: uppercase; color: #555; margin: 15px 0 8px 5px; font-weight: bold; }
+
+        .address-book-item { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer; transition: 0.2s; margin-bottom: 5px; background: #222; border: 1px solid transparent; }
+        .address-book-item.active-session { border-left: 4px solid var(--accent); }
         .address-book-item.selected { background: #333; border-color: var(--primary); }
         .address-book-item canvas { width: 32px; height: 32px; border-radius: 4px; background: #eee; }
 
-        /* Group Tags */
-        #active-groups-list { display: flex; flex-wrap: wrap; gap: 5px; padding: 5px; }
-        .group-tag { background: var(--group-tag); color: #fff; padding: 4px 10px; border-radius: 15px; font-size: 0.75em; cursor: pointer; border: 1px solid #444; transition: 0.2s; }
-        .group-tag:hover { background: var(--primary); }
+        #active-groups-list { display: flex; flex-wrap: wrap; gap: 5px; min-height: 20px; }
+        .group-tag { background: #333; color: #fff; padding: 4px 10px; border-radius: 15px; font-size: 0.75em; cursor: pointer; border: 1px solid #444; }
+        .group-tag:hover { border-color: var(--primary); }
 
-        /* Main Chat Area */
-        #main { flex: 1; display: flex; flex-direction: column; padding: 20px; position: relative; background: #121212; }
         #chat-header { display: flex; align-items: center; gap: 15px; padding-bottom: 15px; border-bottom: 1px solid #333; margin-bottom: 15px; }
         #chat-header canvas { width: 64px; height: 64px; border-radius: 8px; background: #eee; cursor: zoom-in; }
-        #chat-box { flex: 1; overflow-y: auto; background: #151515; border-radius: 8px; padding: 15px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; }
-        .msg { padding: 10px 14px; border-radius: 12px; max-width: 75%; font-size: 0.95em; word-wrap: break-word; }
+        #chat-box { flex: 1; overflow-y: auto; background: #111; border-radius: 8px; padding: 15px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; border: 1px solid #222; }
+
+        .msg { padding: 10px 14px; border-radius: 12px; max-width: 75%; font-size: 0.95em; line-height: 1.4; position: relative; }
         .sent { background: var(--primary); align-self: flex-end; border-bottom-right-radius: 2px; }
-        .received { background: #333; align-self: flex-start; border-bottom-left-radius: 2px; }
-        .verified-badge { font-size: 0.7em; color: var(--accent); display: block; margin-top: 4px; font-weight: bold; }
-        
-        /* Overlays */
+        .received { background: #2a2a2a; align-self: flex-start; border-bottom-left-radius: 2px; }
+        .verified-badge { font-size: 0.65em; color: var(--accent); display: block; margin-top: 4px; }
+
         #my-profile-modal { display: none; position: absolute; top: 60px; left: 15px; width: 250px; background: var(--card); border: 1px solid #444; border-radius: 10px; padding: 15px; z-index: 100; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-        #my-profile-modal canvas { width: 100px; height: 100px; display: block; margin: 10px auto; border-radius: 10px; background: #eee; cursor: zoom-in; }
-        #key-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 2000; backdrop-filter: blur(8px); }
-        .overlay-content { background: var(--card); padding: 30px; border-radius: 15px; max-width: 500px; width: 90%; text-align: center; border: 1px solid #444; }
-        .key-box { background: #000; color: var(--accent); padding: 15px; font-family: monospace; font-size: 0.75em; border-radius: 6px; margin: 20px 0; overflow-wrap: break-word; text-align: left; max-height: 200px; overflow-y: auto; }
-        
-        #setup-overlay { position: absolute; top: 10%; left: 50%; transform: translateX(-50%); z-index: 1000; width: 450px; max-height: 85vh; overflow-y: auto; }
-        .info-section { margin-top: 20px; text-align: left; font-size: 0.85em; color: #aaa; line-height: 1.5; border-top: 1px solid #333; padding-top: 15px; }
-        .info-section h4 { color: var(--primary); margin: 10px 0 5px 0; font-size: 0.9em; text-transform: uppercase; }
-        
-        input { background: #252525; border: 1px solid #444; color: white; padding: 12px; border-radius: 6px; width: 100%; box-sizing: border-box; margin-bottom: 5px; }
+        #my-profile-modal canvas { width: 100px; height: 100px; display: block; margin: 10px auto; border-radius: 10px; }
+
+        input { background: #222; border: 1px solid #444; color: white; padding: 12px; border-radius: 6px; width: 100%; box-sizing: border-box; margin-bottom: 8px; }
         button { padding: 10px 15px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; background: var(--accent); color: white; }
+        button:disabled { background: #444; cursor: not-allowed; }
         .hidden { display: none !important; }
+
+        #key-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.9); display: flex; align-items: center; justify-content: center; z-index: 2000; backdrop-filter: blur(5px); }
+        .overlay-content { background: var(--card); padding: 25px; border-radius: 15px; max-width: 450px; width: 90%; border: 1px solid #444; text-align: center; }
+        .key-box { background: #000; color: var(--accent); padding: 12px; font-family: monospace; font-size: 0.75em; border-radius: 6px; margin: 15px 0; overflow-wrap: break-word; text-align: left; max-height: 150px; overflow-y: auto; }
+
+        /* Setup Landing Page Info Styles */
+        #setup-overlay { position: absolute; top: 5%; left: 50%; transform: translateX(-50%); z-index: 1000; width: 450px; max-height: 90vh; overflow-y: auto; background: var(--card); padding: 30px; border-radius: 15px; border: 1px solid #333; }
+        .info-section { margin-top: 25px; text-align: left; font-size: 0.85em; color: #aaa; line-height: 1.5; border-top: 1px solid #333; padding-top: 15px; }
+        .info-section h4 { color: var(--primary); margin: 15px 0 5px 0; font-size: 0.9em; text-transform: uppercase; }
     </style>
 </head>
 <body>
 
-    <div id="sidebar">
-        <div class="sidebar-header">
-            <button class="burger-btn" onclick="toggleProfile()">☰</button>
-            <h3 style="margin:0">Identity & Groups</h3>
-        </div>
-
-        <!-- My Profile -->
-        <div id="my-profile-modal">
-            <h4 style="margin:0; text-align:center">My Identity</h4>
-            <canvas id="my-thumb" onclick="showKeyInfo(myName, myPubJWK_N)"></canvas>
-            <p id="my-name-display" style="text-align:center; font-weight:bold;"></p>
-            <button onclick="exportKeys()" style="width:100%; font-size:0.8em; background:#444;">Backup Keys</button>
-        </div>
-
-        <div id="address-book-list" style="flex: 1; overflow-y: auto;"></div>
-
-        <div style="margin-top: auto; padding-top: 10px; border-top: 1px solid #333;">
-            <div class="section-label">Active Groups</div>
-            <div id="active-groups-list">
-                <span style="color:#555; font-size: 0.7em;">None active</span>
-            </div>
-            
-            <input type="text" id="group-name-input" placeholder="Enter or Create Group" style="font-size: 0.8em; margin-top:10px;">
-            <button id="discover-btn" onclick="toggleDiscoverable()" style="width: 100%; background: #6f42c1;">Start Discovery</button>
-            <p id="timer-display" style="text-align:center; font-size: 0.7em; color: orange; margin-top:5px;"></p>
-        </div>
+<div id="sidebar">
+    <div class="sidebar-header">
+        <button class="burger-btn" onclick="toggleProfile()">☰</button>
+        <h3 style="margin:0">Messenger</h3>
     </div>
 
-    <div id="main">
-        <div id="chat-header" class="hidden">
-            <canvas id="recipient-thumb" onclick="inspectRemoteKey()"></canvas>
-            <div>
-                <h2 id="recipient-name">Username</h2>
-                <small id="recipient-status" style="color:var(--accent)">Verified End-to-End Session</small>
-            </div>
-        </div>
-        <div id="chat-box">
-            <div id="welcome-msg" style="text-align:center; color:#555; margin-top:20%;">Select a contact to begin.</div>
-        </div>
-        <div style="display:flex; gap:10px;">
-            <input type="text" id="msg-input" placeholder="Select a recipient..." disabled onkeypress="if(event.key==='Enter') sendSecureMsg()">
-            <button id="send-btn" onclick="sendSecureMsg()" disabled>Send</button>
-        </div>
-
-        <!-- STARTUP OVERLAY WITH DOCUMENTATION -->
-        <div id="setup-overlay" class="card">
-            <h2 style="margin-top:0">🔐 Private P2P Chat</h2>
-            <p style="font-size: 0.9em; color: #888;">Generate a new identity or load your existing keys to start.</p>
-            
-            <input type="text" id="username" placeholder="Choose a Username...">
-            <button onclick="initIdentity(true)" style="width:100%; margin-top:10px;">Create New Identity</button>
-            
-            <div style="margin: 15px 0; text-align: center; color: #555; font-size: 0.8em;">OR</div>
-            
-            <input type="file" id="key-file" onchange="initIdentity(false)">
-            <p style="font-size: 0.75em; color: #666; margin-top:5px;">Select your .json identity backup file.</p>
-
-            <!-- PRIVACY & SECURITY DESCRIPTION -->
-            <div class="info-section">
-                <h4>🛡️ End-to-End Security</h4>
-                <p>This application uses the <b>Web Crypto API</b> to generate 2048-bit RSA-OAEP keys. When you send a message, it is encrypted locally on your device with the recipient's public key. Only the intended recipient can decrypt it with their private key.</p>
-                
-                <h4>🤝 Direct Peer-to-Peer</h4>
-                <p>Messages travel directly between browsers via <b>WebRTC</b>. No central server ever sees or stores your messages. A public discovery server (PeerJS) is used only to help browsers find each other's IP addresses.</p>
-                
-                <h4>🖼️ Cryptographic Identicons</h4>
-                <p>The pattern next to your name is a unique visual representation of your <b>Public Key</b>. If a user's icon changes, their identity has been compromised or changed. Always verify fingerprints with your contacts.</p>
-
-                <h4>💾 Portable & Local</h4>
-                <p>This is a <b>Standalone Application</b>. You can save this page as a single HTML file to your hard drive or a USB stick. It runs directly in the browser without requiring a dedicated web server, ensuring you own the software you use.</p>
-            </div>
-        </div>
+    <div id="my-profile-modal">
+        <h4 style="margin:0; text-align:center">My Fingerprint</h4>
+        <canvas id="my-thumb" onclick="showKeyInfo(myName, myPubJWK_N)"></canvas>
+        <p id="my-name-display" style="text-align:center; font-weight:bold; margin: 10px 0;"></p>
+        <button onclick="exportKeys()" style="width:100%; font-size:0.8em; background:#444;">Backup Identity</button>
     </div>
 
-    <!-- Key Inspection Overlay -->
-    <div id="key-overlay" class="hidden" onclick="closeKeyInfo()">
-        <div class="overlay-content" onclick="event.stopPropagation()">
-            <h3 id="overlay-username">Public Key Modulus</h3>
-            <div id="overlay-key-text" class="key-box"></div>
-            <button onclick="copyOverlayKey()" style="width:100%">Copy to Clipboard</button>
+    <input type="text" id="direct-id-input" placeholder="Peer ID..." style="font-size: 0.8em;">
+    <button onclick="directConnect()" style="width: 100%; font-size: 0.8em; background: var(--primary);">Connect Direct</button>
+
+    <div id="address-book-list" style="flex: 1; overflow-y: auto;"></div>
+
+    <div style="margin-top: auto; padding-top: 10px; border-top: 1px solid #333;">
+        <div class="section-label">Live Groups</div>
+        <div id="active-groups-list"></div>
+
+        <input type="text" id="group-name-input" placeholder="Interest (e.g. devs)" style="font-size: 0.8em; margin-top:10px;">
+        <button id="discover-btn" onclick="toggleDiscoverable()" style="width: 100%; background: #6f42c1;">Discovery Mode</button>
+        <p id="timer-display" style="text-align:center; font-size: 0.7em; color: orange; margin: 5px 0; min-height: 1em;"></p>
+    </div>
+</div>
+
+<div id="main">
+    <div id="chat-header" class="hidden">
+        <canvas id="recipient-thumb" onclick="inspectRemoteKey()"></canvas>
+        <div>
+            <h2 id="recipient-name" style="margin:0">Username</h2>
+            <small style="color:var(--accent)">E2EE Secured</small>
         </div>
     </div>
+    <div id="chat-box">
+        <div id="welcome-msg" style="text-align:center; color:#444; margin-top:20%;">Start a session from the sidebar.</div>
+    </div>
+    <div style="display:flex; gap:10px;">
+        <input type="text" id="msg-input" placeholder="Type a message..." disabled onkeypress="if(event.key==='Enter') sendSecureMsg()">
+        <button id="send-btn" onclick="sendSecureMsg()" disabled>Send</button>
+    </div>
+
+    <div id="setup-overlay">
+        <h2 style="margin:0 0 10px 0">Private P2P</h2>
+        <input type="text" id="username" placeholder="Username...">
+        <button onclick="initIdentity(true)" style="width:100%; margin-top:10px;">Create New Identity</button>
+        <div style="margin: 15px 0; text-align: center; color: #555; font-size: 0.8em;">OR</div>
+        <input type="file" id="key-file" onchange="initIdentity(false)">
+
+        <!-- Privacy & Security Description -->
+        <div class="info-section">
+            <h4>🛡️ End-to-End Security</h4>
+            <p>This application uses the Web Crypto API to generate 2048-bit RSA-OAEP keys. When you send a message, it is encrypted locally on your device with the recipient's public key. Only the intended recipient can decrypt it with their private key.</p>
+
+            <h4>🤝 Direct Peer-to-Peer</h4>
+            <p>Messages travel directly between browsers via WebRTC. No central server ever sees or stores your messages. A public discovery server (PeerJS) is used only to help browsers find each other's IP addresses.</p>
+
+            <h4>🖼️ Cryptographic Identicons</h4>
+            <p>The pattern next to your name is a unique visual representation of your Public Key. If a user's icon changes, their identity has been compromised or changed. Always verify fingerprints with your contacts.</p>
+
+            <h4>💾 Portable & Local</h4>
+            <p>This is a Standalone Application. You can save this page as a single HTML file to your hard drive or a USB stick. It runs directly in the browser without requiring a dedicated web server, ensuring you own the software you use.</p>
+        </div>
+    </div>
+</div>
+
+<div id="key-overlay" class="hidden" onclick="closeKeyInfo()">
+    <div class="overlay-content" onclick="event.stopPropagation()">
+        <h3 id="overlay-username" style="margin:0">Key Inspection</h3>
+        <div id="overlay-key-text" class="key-box"></div>
+        <button onclick="copyOverlayKey()" style="width:100%">Copy Modulus (n)</button>
+    </div>
+</div>
 
 <script>
-    // Logic remains identical to V14 for stability
-    const SUPER_LOBBY_ID = "GLOBAL_GROUP_REGISTRY_V15";
+    const SUPER_LOBBY_ID = "LB_GLOBAL_REG_V17";
+    const SYNC_RATE = 30000;
+
     let myKeys, myName, peer, myPubJWK_N;
-    let sessions = new Map(); 
-    let currentTargetId = null; 
+    let sessions = new Map();
+    let currentTargetId = null;
     let isDiscoverable = false;
     let lobbyConn = null, globalRegistryConn = null;
-    let groupAddressBook = [], savedContacts = []; 
+    let groupAddressBook = [], savedContacts = [];
+    let discoveryInterval = null, backoffUntil = 0;
 
-    const DB_NAME = "PrivateP2P_V15";
-    const STORE_NAME = "contacts";
-    function openDB() {
-        return new Promise((resolve, reject) => {
-            const request = indexedDB.open(DB_NAME, 1);
-            request.onupgradeneeded = e => e.target.result.createObjectStore(STORE_NAME, { keyPath: "id" });
-            request.onsuccess = e => resolve(e.target.result);
-            request.onerror = e => reject(e);
+    async function openDB() {
+        return new Promise((resolve) => {
+            const req = indexedDB.open("SecureP2P_V17", 1);
+            req.onupgradeneeded = e => e.target.result.createObjectStore("contacts", { keyPath: "id" });
+            req.onsuccess = e => resolve(e.target.result);
         });
     }
     async function saveContact(id, name, pub) {
         const db = await openDB();
-        const tx = db.transaction(STORE_NAME, "readwrite");
-        tx.objectStore(STORE_NAME).put({ id, name, pub, lastSeen: Date.now() });
+        db.transaction("contacts", "readwrite").objectStore("contacts").put({ id, name, pub, lastSeen: Date.now() });
     }
     async function loadContacts() {
         const db = await openDB();
-        return new Promise(resolve => {
-            const tx = db.transaction(STORE_NAME, "readonly");
-            tx.objectStore(STORE_NAME).getAll().onsuccess = e => resolve(e.target.result);
-        });
+        return new Promise(r => { db.transaction("contacts").objectStore("contacts").getAll().onsuccess = e => r(e.target.result); });
     }
 
     async function initIdentity(isNew) {
-        if (isNew) {
-            myName = document.getElementById('username').value;
-            if (!myName) return alert("Username required");
-            myKeys = await window.crypto.subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["encrypt", "decrypt"]);
-        } else {
-            const file = document.getElementById('key-file').files[0];
-            if(!file) return;
-            const data = JSON.parse(await file.text());
-            myName = data.name;
-            myKeys = {
-                publicKey: await window.crypto.subtle.importKey("jwk", data.pub, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]),
-                privateKey: await window.crypto.subtle.importKey("jwk", data.priv, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["decrypt"])
-            };
-        }
-        setupPeer();
+        try {
+            if (isNew) {
+                myName = document.getElementById('username').value;
+                if (!myName) return alert("Enter username");
+                myKeys = await window.crypto.subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["encrypt", "decrypt"]);
+            } else {
+                const data = JSON.parse(await document.getElementById('key-file').files[0].text());
+                myName = data.name;
+                myKeys = {
+                    publicKey: await window.crypto.subtle.importKey("jwk", data.pub, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]),
+                    privateKey: await window.crypto.subtle.importKey("jwk", data.priv, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["decrypt"])
+                };
+            }
+            setupPeer();
+        } catch (e) { alert("Identity load failed."); }
     }
 
     function setupPeer() {
-        peer = new Peer(myName.replace(/\s/g, '') + "-" + Math.floor(Math.random()*9999));
+        const config = { host: '0.peerjs.com', port: 443, secure: true, debug: 1 };
+        peer = new Peer(myName.replace(/\s/g, '') + "-" + Math.floor(Math.random()*9999), config);
+
         peer.on('open', async (id) => {
             document.getElementById('setup-overlay').classList.add('hidden');
             document.getElementById('my-name-display').innerText = myName;
@@ -215,53 +207,100 @@
             drawIcon('my-thumb', pubJWK.n);
             savedContacts = await loadContacts();
             refreshAddressBookUI();
-            setInterval(syncWithLobbies, 5000);
+            setInterval(syncWithLobbies, SYNC_RATE);
             syncWithLobbies();
         });
         peer.on('connection', conn => handleConnectionLogic(conn));
+        peer.on('error', err => {
+            if (err.type === 'server-error' || err.type === 'socket-error') {
+                backoffUntil = Date.now() + 60000;
+            }
+        });
     }
 
     function syncWithLobbies() {
+        if (Date.now() < backoffUntil) return;
         if (!globalRegistryConn?.open) {
             const gConn = peer.connect(SUPER_LOBBY_ID);
-            gConn.on('open', () => globalRegistryConn = gConn);
-            gConn.on('data', data => { if (data.type === 'GLOBAL_GROUPS') updateGroupsUI(data.list); });
+            gConn.on('open', () => { globalRegistryConn = gConn; });
+            gConn.on('data', d => { if (d.type === 'GLOBAL_GROUPS') updateGroupsUI(d.list); });
+            gConn.on('error', () => { globalRegistryConn = null; });
         }
         if (isDiscoverable) {
             if (lobbyConn?.open) { sendRegistration(); }
             else {
-                const name = document.getElementById('group-name-input').value.trim();
-                const lConn = peer.connect("LOBBY_ROOM_" + btoa(name || "global").replace(/=/g, ''));
+                const groupName = document.getElementById('group-name-input').value.trim() || "global";
+                const lobbyID = "LB_V17_" + btoa(groupName).replace(/=/g, '').substring(0, 12);
+                const lConn = peer.connect(lobbyID);
                 lConn.on('open', () => { lobbyConn = lConn; sendRegistration(); });
-                lConn.on('data', data => { if (data.type === 'ADDRESS_BOOK') { groupAddressBook = data.list; refreshAddressBookUI(); } });
+                lConn.on('data', d => { if (d.type === 'ADDRESS_BOOK') { groupAddressBook = d.list; refreshAddressBookUI(); } });
+                lConn.on('error', () => { lobbyConn = null; });
             }
         }
     }
 
     async function toggleDiscoverable() {
-        const btn = document.getElementById('discover-btn');
-        const input = document.getElementById('group-name-input');
-        const groupName = input.value.trim().toLowerCase() || "global";
         if (!isDiscoverable) {
-            isDiscoverable = true; btn.innerText = "Stop Discovery"; btn.style.background = "var(--danger)"; input.disabled = true;
-            const lobbyID = "LOBBY_ROOM_" + btoa(groupName).replace(/=/g, '');
-            const hostPeer = new Peer(lobbyID);
+            isDiscoverable = true;
+            document.getElementById('discover-btn').innerText = "Stop Discovery";
+            document.getElementById('discover-btn').style.background = "var(--danger)";
+            document.getElementById('group-name-input').disabled = true;
+            const name = document.getElementById('group-name-input').value.trim().toLowerCase() || "global";
+            const lobbyID = "LB_V17_" + btoa(name).replace(/=/g, '').substring(0, 12);
+            const hostPeer = new Peer(lobbyID, { host: '0.peerjs.com', port: 443, secure: true });
             hostPeer.on('open', () => {
-                startLobbyService(hostPeer, groupName);
-                const globalRegistryHost = new Peer(SUPER_LOBBY_ID);
-                globalRegistryHost.on('open', () => startGlobalRegistryService(globalRegistryHost));
+                startLobbyService(hostPeer, name);
+                const gHost = new Peer(SUPER_LOBBY_ID, { host: '0.peerjs.com', port: 443, secure: true });
+                gHost.on('open', () => startGlobalRegistryService(gHost));
             });
-            hostPeer.on('error', (err) => { if (err.type === 'id-taken') syncWithLobbies(); });
+            hostPeer.on('error', () => { hostPeer.destroy(); syncWithLobbies(); });
             startTimer();
         } else {
-            isDiscoverable = false; btn.innerText = "Start Discovery"; btn.style.background = "#6f42c1"; input.disabled = false;
+            isDiscoverable = false;
+            document.getElementById('discover-btn').innerText = "Discovery Mode";
+            document.getElementById('discover-btn').style.background = "#6f42c1";
+            document.getElementById('group-name-input').disabled = false;
             if (lobbyConn?.open) lobbyConn.send({ type: 'UNREGISTER', id: peer.id });
             lobbyConn = null; groupAddressBook = []; refreshAddressBookUI();
+            clearInterval(discoveryInterval); document.getElementById('timer-display').innerText = "";
         }
     }
 
+    function startGlobalRegistryService(hp) {
+        let groups = new Map(); let subs = new Set();
+        hp.on('connection', c => {
+            subs.add(c);
+            c.on('data', m => { if (m.type === 'REPORT') { groups.set(m.name, Date.now()); broadcast(); } });
+        });
+        const broadcast = () => {
+            const list = Array.from(groups.keys());
+            subs.forEach(s => { if (s.open) s.send({ type: 'GLOBAL_GROUPS', list }); });
+        };
+        setInterval(() => {
+            let ch = false; groups.forEach((v, k) => { if (v < Date.now() - 40000) { groups.delete(k); ch = true; } });
+            if (ch) broadcast();
+        }, 20000);
+    }
+
+    function startLobbyService(hp, gn) {
+        let reg = new Map(); let subs = new Set();
+        const broadcast = () => {
+            const list = Array.from(reg.values());
+            subs.forEach(s => { if (s.open) s.send({ type: 'ADDRESS_BOOK', list }); });
+            if (globalRegistryConn?.open) globalRegistryConn.send({ type: 'REPORT', name: gn });
+        };
+        hp.on('connection', c => {
+            subs.add(c);
+            c.on('data', m => {
+                if (m.type === 'REGISTER') { reg.set(m.data.id, m.data); broadcast(); }
+                else if (m.type === 'UNREGISTER') { reg.delete(m.id); broadcast(); }
+            });
+        });
+    }
+
     function handleConnectionLogic(conn) {
-        if (!sessions.has(conn.peer)) sessions.set(conn.peer, { conn, remotePubK: null, remoteName: conn.peer, history: [] });
+        if (!sessions.has(conn.peer)) sessions.set(conn.peer, { conn, remotePubK: null, remoteName: "Syncing...", history: [] });
+        else sessions.get(conn.peer).conn = conn;
         conn.on('open', async () => {
             const pubJWK = await window.crypto.subtle.exportKey("jwk", myKeys.publicKey);
             conn.send({ type: 'HANDSHAKE', name: myName, pub: pubJWK });
@@ -280,74 +319,6 @@
                 addHistory(conn.peer, data.sender, new TextDecoder().decode(dec), 'received');
             }
         });
-    }
-
-    function startGlobalRegistryService(hostPeer) {
-        let activeGroups = new Map(); let subs = new Set();
-        hostPeer.on('connection', c => {
-            subs.add(c);
-            c.on('data', m => { if (m.type === 'REPORT_GROUP') { activeGroups.set(m.name, Date.now()); broadcast(); } });
-        });
-        const broadcast = () => {
-            const list = Array.from(activeGroups.keys());
-            subs.forEach(s => { if (s.open) s.send({ type: 'GLOBAL_GROUPS', list }); });
-        };
-        setInterval(() => {
-            let changed = false; activeGroups.forEach((v, k) => { if (v < Date.now() - 15000) { activeGroups.delete(k); changed = true; } });
-            if (changed) broadcast();
-        }, 10000);
-    }
-
-    function startLobbyService(hostPeer, groupName) {
-        let registry = new Map(); let subs = new Set();
-        const broadcast = () => {
-            const list = Array.from(registry.values());
-            subs.forEach(s => { if (s.open) s.send({ type: 'ADDRESS_BOOK', list }); });
-            if (globalRegistryConn?.open) globalRegistryConn.send({ type: 'REPORT_GROUP', name: groupName });
-        };
-        hostPeer.on('connection', c => {
-            subs.add(c);
-            c.on('data', m => { 
-                if (m.type === 'REGISTER') { registry.set(m.data.id, m.data); broadcast(); }
-                else if (m.type === 'UNREGISTER') { registry.delete(m.id); broadcast(); }
-            });
-        });
-        setInterval(() => {
-            let changed = false; registry.forEach((v, k) => { if (v.expires < Date.now()) { registry.delete(k); changed = true; } });
-            if (changed) broadcast();
-        }, 10000);
-    }
-
-    function updateGroupsUI(list) {
-        const container = document.getElementById('active-groups-list');
-        container.innerHTML = "";
-        if (!list.length) { container.innerHTML = '<span style="color:#555; font-size: 0.7em;">None active</span>'; return; }
-        list.forEach(name => {
-            const span = document.createElement('span');
-            span.className = 'group-tag'; span.innerText = name;
-            span.onclick = () => { document.getElementById('group-name-input').value = name; };
-            container.appendChild(span);
-        });
-    }
-
-    function refreshAddressBookUI() {
-        const container = document.getElementById('address-book-list');
-        container.innerHTML = "";
-        const renderSection = (title, list) => {
-            if (!list.length) return;
-            const label = document.createElement('div'); label.className = 'section-label'; label.innerText = title;
-            container.appendChild(label);
-            list.filter(u => u.id !== peer.id).forEach(user => {
-                const div = document.createElement('div');
-                div.className = `address-book-item ${sessions.has(user.id) ? 'active-session' : ''} ${currentTargetId === user.id ? 'selected' : ''}`;
-                div.innerHTML = `<canvas id="icon-${user.id}"></canvas> <span>${user.name}</span>`;
-                div.onclick = () => selectUser(user.id);
-                container.appendChild(div);
-                drawIcon(`icon-${user.id}`, user.pub.n);
-            });
-        };
-        renderSection("Contacts", savedContacts);
-        renderSection("Discovery", groupAddressBook.filter(gu => !savedContacts.find(sc => sc.id === gu.id)));
     }
 
     async function selectUser(id) {
@@ -371,7 +342,7 @@
         if (!canvas) return;
         const ctx = canvas.getContext('2d'); canvas.width = 128; canvas.height = 128;
         const bytes = new Uint8Array(atob(n.replace(/-/g, '+').replace(/_/g, '/')).split('').map(c => c.charCodeAt(0)));
-        ctx.fillStyle = "#f5f5f5"; ctx.fillRect(0, 0, 128, 128);
+        ctx.fillStyle = "#f0f0f0"; ctx.fillRect(0, 0, 128, 128);
         ctx.fillStyle = `rgb(${bytes[0]},${bytes[1]},${bytes[2]})`;
         for (let y = 0; y < 8; y++) {
             for (let x = 0; x < 4; x++) {
@@ -382,53 +353,84 @@
         }
     }
 
-    function renderMsg(user, text, type) {
-        const div = document.createElement('div'); div.className = `msg ${type}`;
-        div.innerHTML = `<small><b>${user}</b></small><br>${text} <span class="verified-badge">✓ Verified</span>`;
-        const box = document.getElementById('chat-box'); box.appendChild(div); box.scrollTop = box.scrollHeight;
-    }
-
-    function addHistory(peerId, sender, text, type) {
-        if (!sessions.has(peerId)) sessions.set(peerId, { history: [], remoteName: peerId });
-        sessions.get(peerId).history.push({ sender, text, type });
-        if (peerId === currentTargetId) renderMsg(sender, text, type);
+    function refreshAddressBookUI() {
+        const container = document.getElementById('address-book-list');
+        container.innerHTML = "";
+        const renderSect = (title, list) => {
+            if (!list.length) return;
+            const l = document.createElement('div'); l.className = 'section-label'; l.innerText = title;
+            container.appendChild(l);
+            list.filter(u => u.id !== peer.id).forEach(user => {
+                const d = document.createElement('div');
+                d.className = `address-book-item ${sessions.has(user.id) ? 'active-session' : ''} ${currentTargetId === user.id ? 'selected' : ''}`;
+                d.innerHTML = `<canvas id="icon-${user.id}"></canvas> <span>${user.name}</span>`;
+                d.onclick = () => selectUser(user.id);
+                container.appendChild(d);
+                drawIcon(`icon-${user.id}`, user.pub.n);
+            });
+        };
+        renderSect("Contacts", savedContacts);
+        renderSect("Discovery", groupAddressBook.filter(gu => !savedContacts.find(sc => sc.id === gu.id)));
     }
 
     function refreshChatBox() {
-        const box = document.getElementById('chat-box'); const header = document.getElementById('chat-header');
-        box.innerHTML = ""; const session = sessions.get(currentTargetId);
+        const box = document.getElementById('chat-box'); box.innerHTML = "";
+        const session = sessions.get(currentTargetId);
         if (session) {
-            header.classList.remove('hidden'); document.getElementById('recipient-name').innerText = session.remoteName;
+            document.getElementById('chat-header').classList.remove('hidden');
+            document.getElementById('recipient-name').innerText = session.remoteName;
             if (session.remoteJWK_N) drawIcon('recipient-thumb', session.remoteJWK_N);
             session.history.forEach(m => renderMsg(m.sender, m.text, m.type));
             document.getElementById('msg-input').disabled = !session.remotePubK;
             document.getElementById('send-btn').disabled = !session.remotePubK;
-        } else { header.classList.add('hidden'); box.innerHTML = '<div style="text-align:center; color:#555; margin-top:20%;">Select a recipient.</div>'; }
+            document.getElementById('msg-input').placeholder = session.remotePubK ? "Message..." : "Syncing keys...";
+        } else {
+            document.getElementById('chat-header').classList.add('hidden');
+            box.innerHTML = '<div style="text-align:center; color:#444; margin-top:20%;">Select a recipient.</div>';
+        }
     }
 
-    function showKeyInfo(user, keyN) {
-        document.getElementById('overlay-username').innerText = `${user}'s Identity`;
-        document.getElementById('overlay-key-text').innerText = keyN;
-        document.getElementById('key-overlay').classList.remove('hidden');
+    function updateGroupsUI(list) {
+        const c = document.getElementById('active-groups-list'); c.innerHTML = "";
+        if(!list.length) { c.innerHTML = '<span style="color:#444; font-size: 0.7em;">None</span>'; return; }
+        list.forEach(name => {
+            const s = document.createElement('span'); s.className = 'group-tag'; s.innerText = name;
+            s.onclick = () => { document.getElementById('group-name-input').value = name; };
+            c.appendChild(s);
+        });
     }
-    function closeKeyInfo() { document.getElementById('key-overlay').classList.add('hidden'); }
-    function copyOverlayKey() { navigator.clipboard.writeText(document.getElementById('overlay-key-text').innerText); alert("Copied!"); }
-    function inspectRemoteKey() { const s = sessions.get(currentTargetId); if (s?.remoteJWK_N) showKeyInfo(s.remoteName, s.remoteJWK_N); }
-    function toggleProfile() { const m = document.getElementById('my-profile-modal'); m.style.display = m.style.display === 'block' ? 'none' : 'block'; }
+
+    function renderMsg(u, t, type) {
+        const d = document.createElement('div'); d.className = `msg ${type}`;
+        d.innerHTML = `<small><b>${u}</b></small><br>${t} <span class="verified-badge">✓ Verified Identity</span>`;
+        const b = document.getElementById('chat-box'); b.appendChild(d); b.scrollTop = b.scrollHeight;
+    }
+    function addHistory(pid, s, t, type) {
+        if (!sessions.has(pid)) sessions.set(pid, { history: [], remoteName: pid });
+        sessions.get(pid).history.push({ sender: s, text: t, type });
+        if (pid === currentTargetId) renderMsg(s, t, type);
+    }
     async function sendRegistration() {
-        const pubJWK = await window.crypto.subtle.exportKey("jwk", myKeys.publicKey);
-        lobbyConn.send({ type: 'REGISTER', data: { name: myName, id: peer.id, pub: pubJWK, expires: Date.now() + 300000 } });
+        if (!lobbyConn?.open) return;
+        const pub = await window.crypto.subtle.exportKey("jwk", myKeys.publicKey);
+        lobbyConn.send({ type: 'REGISTER', data: { name: myName, id: peer.id, pub, expires: Date.now() + 60000 } });
     }
     function startTimer() {
-        let timeLeft = 300; const display = document.getElementById('timer-display');
+        let tl = 300; const d = document.getElementById('timer-display');
         discoveryInterval = setInterval(() => {
-            timeLeft--; display.innerText = `Active Lobby: ${Math.floor(timeLeft/60)}:${(timeLeft%60).toString().padStart(2, '0')}`;
-            if (timeLeft <= 0) toggleDiscoverable();
+            tl--; d.innerText = `Lobby Active: ${Math.floor(tl/60)}:${(tl%60).toString().padStart(2, '0')}`;
+            if (tl <= 0) toggleDiscoverable();
         }, 1000);
     }
+    function showKeyInfo(u, n) { document.getElementById('overlay-username').innerText = u; document.getElementById('overlay-key-text').innerText = n; document.getElementById('key-overlay').classList.remove('hidden'); }
+    function closeKeyInfo() { document.getElementById('key-overlay').classList.add('hidden'); }
+    function copyOverlayKey() { navigator.clipboard.writeText(document.getElementById('overlay-key-text').innerText); alert("Copied"); }
+    function inspectRemoteKey() { const s = sessions.get(currentTargetId); if (s?.remoteJWK_N) showKeyInfo(s.remoteName, s.remoteJWK_N); }
+    function toggleProfile() { const m = document.getElementById('my-profile-modal'); m.style.display = m.style.display === 'block' ? 'none' : 'block'; }
+    function directConnect() { const id = document.getElementById('direct-id-input').value.trim(); if (id && id !== peer.id) selectUser(id); }
     async function exportKeys() {
-        const blob = new Blob([JSON.stringify({ name: myName, pub: await window.crypto.subtle.exportKey("jwk", myKeys.publicKey), priv: await window.crypto.subtle.exportKey("jwk", myKeys.privateKey) })], { type: "application/json" });
-        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `identity.json`; a.click();
+        const b = new Blob([JSON.stringify({ name: myName, pub: await window.crypto.subtle.exportKey("jwk", myKeys.publicKey), priv: await window.crypto.subtle.exportKey("jwk", myKeys.privateKey) })], { type: "application/json" });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `id_${myName}.json`; a.click();
     }
 </script>
 </body>
