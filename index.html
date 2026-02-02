@@ -36,6 +36,9 @@
         .section-label { font-size: 0.7em; text-transform: uppercase; color: #555; margin: 15px 0 8px 5px; font-weight: bold; }
 
         .address-book-item { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer; transition: 0.2s; margin-bottom: 5px; background: #222; border: 1px solid transparent; }
+        .address-book-item.pinned { border-left: 4px solid gold; background: #2a2a1a; }
+        .address-book-item.expired { opacity: 0.5; }
+        .address-book-item.expired:hover { opacity: 0.7; }
         .address-book-item.active-session { border-left: 4px solid var(--accent); }
         .address-book-item.selected { background: #333; border-color: var(--primary); }
         .address-book-item canvas { width: 32px; height: 32px; border-radius: 4px; background: #eee; }
@@ -44,8 +47,11 @@
         .group-tag { background: #333; color: #fff; padding: 4px 10px; border-radius: 15px; font-size: 0.75em; cursor: pointer; border: 1px solid #444; }
         .group-tag:hover { border-color: var(--primary); }
 
-        #chat-header { display: flex; align-items: center; gap: 15px; padding-bottom: 15px; border-bottom: 1px solid #333; margin-bottom: 15px; }
+    #chat-header { display: flex; align-items: center; gap: 15px; padding-bottom: 15px; border-bottom: 1px solid #333; margin-bottom: 15px; }
         #chat-header canvas { width: 64px; height: 64px; border-radius: 8px; background: #eee; cursor: zoom-in; }
+        .trust-toggle { background: #444; border: 1px solid #666; color: white; padding: 8px 16px; border-radius: 20px; font-size: 0.8em; cursor: pointer; margin-left: auto; transition: all 0.2s; }
+        .trust-toggle.trusted { background: gold; color: black; border-color: gold; }
+        .trust-toggle:hover { opacity: 0.8; }
         #chat-box { flex: 1; overflow-y: auto; background: #111; border-radius: 8px; padding: 15px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; border: 1px solid #222; }
 
         .msg { padding: 10px 14px; border-radius: 12px; max-width: 75%; font-size: 0.95em; line-height: 1.4; position: relative; }
@@ -88,7 +94,7 @@
 
     <div id="my-profile-modal">
         <h4 style="margin:0; text-align:center">My Fingerprint</h4>
-        <canvas id="my-thumb" onclick="showKeyInfo(myName, myPubJWK_N)"></canvas>
+        <canvas id="my-thumb" onclick="showKeyInfo(peer.id, myPubJWK_N)"></canvas>
         <p id="my-name-display" style="text-align:center; font-weight:bold; margin: 10px 0;"></p>
         <button onclick="exportKeys()" style="width:100%; font-size:0.8em; background:#444;">Backup Identity</button>
     </div>
@@ -115,6 +121,7 @@
             <h2 id="recipient-name" style="margin:0">Username</h2>
             <small style="color:var(--accent)">E2EE Secured</small>
         </div>
+        <button id="trust-toggle" class="trust-toggle" onclick="toggleCurrentUserTrust()">Add to Trusted</button>
     </div>
     <div id="chat-box">
         <div id="welcome-msg" style="text-align:center; color:#444; margin-top:20%;">Start a session from the sidebar.</div>
@@ -175,9 +182,9 @@
             req.onsuccess = e => resolve(e.target.result);
         });
     }
-    async function saveContact(id, name, pub) {
+    async function saveContact(id, name, pub, isPinned = false) {
         const db = await openDB();
-        db.transaction("contacts", "readwrite").objectStore("contacts").put({ id, name, pub, lastSeen: Date.now() });
+        db.transaction("contacts", "readwrite").objectStore("contacts").put({ id, name, pub, lastSeen: Date.now(), isPinned });
     }
     async function loadContacts() {
         const db = await openDB();
@@ -208,13 +215,14 @@
 
         peer.on('open', async (id) => {
             document.getElementById('setup-overlay').classList.add('hidden');
-            document.getElementById('my-name-display').innerText = myName;
+            document.getElementById('my-name-display').innerText = id; // Show full peer ID
             const pubJWK = await window.crypto.subtle.exportKey("jwk", myKeys.publicKey);
             myPubJWK_N = pubJWK.n;
             drawIcon('my-thumb', pubJWK.n);
             savedContacts = await loadContacts();
             refreshAddressBookUI();
             setInterval(syncWithLobbies, SYNC_RATE);
+            setInterval(cleanupInactiveUsers, 45000); // Clean every 45 seconds
             syncWithLobbies();
         });
         peer.on('connection', conn => handleConnectionLogic(conn));
@@ -294,8 +302,9 @@
     function startLobbyService(hp, gn) {
         let reg = new Map(); let subs = new Set();
         const broadcast = () => {
-            const list = Array.from(reg.values());
-            subs.forEach(s => { if (s.open) s.send({ type: 'ADDRESS_BOOK', list }); });
+            const now = Date.now();
+            const activeList = Array.from(reg.values()).filter(u => u.expires > now);
+            subs.forEach(s => { if (s.open) s.send({ type: 'ADDRESS_BOOK', list: activeList }); });
             if (globalRegistryConn?.open) globalRegistryConn.send({ type: 'REPORT', name: gn });
         };
         hp.on('connection', c => {
@@ -304,7 +313,17 @@
                 if (m.type === 'REGISTER') { reg.set(m.data.id, m.data); broadcast(); }
                 else if (m.type === 'UNREGISTER') { reg.delete(m.id); broadcast(); }
             });
+            c.on('close', () => subs.delete(c));
         });
+        // Clean expired users every 30 seconds
+        setInterval(() => {
+            const now = Date.now();
+            let cleaned = false;
+            reg.forEach((user, id) => {
+                if (user.expires < now) { reg.delete(id); cleaned = true; }
+            });
+            if (cleaned) broadcast();
+        }, 30000);
     }
 
     function handleConnectionLogic(conn) {
@@ -319,6 +338,13 @@
                 const pubK = await window.crypto.subtle.importKey("jwk", data.pub, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]);
                 let sess = sessions.get(conn.peer);
                 sess.remotePubK = pubK; sess.remoteName = data.name; sess.remoteJWK_N = data.pub.n;
+                
+                // Check for potential impersonation
+                const existingContact = savedContacts.find(c => c.name === data.name && c.id !== conn.peer);
+                if (existingContact && existingContact.isPinned) {
+                    showNotification(`⚠️ Warning: Someone is using the name "${data.name}" but has a different identity than your trusted contact!`, 'error');
+                }
+                
                 await saveContact(conn.peer, data.name, data.pub);
                 savedContacts = await loadContacts();
                 refreshAddressBookUI();
@@ -384,15 +410,30 @@
             container.appendChild(l);
             list.filter(u => u.id !== peer.id).forEach(user => {
                 const d = document.createElement('div');
-                d.className = `address-book-item ${sessions.has(user.id) ? 'active-session' : ''} ${currentTargetId === user.id ? 'selected' : ''}`;
-                d.innerHTML = `<canvas id="icon-${user.id}"></canvas> <span>${user.name}</span>`;
+                const isActive = sessions.has(user.id) && sessions.get(user.id).conn?.open;
+                const isExpired = user.expires && user.expires < Date.now();
+                const isPinned = user.isPinned;
+                d.className = `address-book-item ${isActive ? 'active-session' : ''} ${currentTargetId === user.id ? 'selected' : ''} ${isExpired ? 'expired' : ''} ${isPinned ? 'pinned' : ''}`;
+                
+                const offlineText = isExpired ? ' (offline)' : '';
+                d.innerHTML = `<canvas id="icon-${user.id}"></canvas> <span>${user.name}${offlineText}</span>`;
                 d.onclick = () => selectUser(user.id);
                 container.appendChild(d);
                 drawIcon(`icon-${user.id}`, user.pub.n);
             });
         };
-        renderSect("Contacts", savedContacts);
-        renderSect("Discovery", groupAddressBook.filter(gu => !savedContacts.find(sc => sc.id === gu.id)));
+        
+        const pinnedContacts = savedContacts.filter(c => c.isPinned).sort((a, b) => a.name.localeCompare(b.name));
+        const regularContacts = savedContacts.filter(c => !c.isPinned).sort((a, b) => a.name.localeCompare(b.name));
+        
+        if (pinnedContacts.length) renderSect("📌 Trusted Contacts", pinnedContacts);
+        if (regularContacts.length) renderSect("Contacts", regularContacts);
+        
+        const activeDiscovery = groupAddressBook.filter(gu => 
+            !savedContacts.find(sc => sc.id === gu.id) && 
+            (!gu.expires || gu.expires > Date.now())
+        );
+        renderSect("Discovery", activeDiscovery);
     }
 
     function refreshChatBox() {
@@ -402,6 +443,18 @@
             document.getElementById('chat-header').classList.remove('hidden');
             document.getElementById('recipient-name').innerText = session.remoteName;
             if (session.remoteJWK_N) drawIcon('recipient-thumb', session.remoteJWK_N);
+            
+            // Update trust toggle button
+            const contact = savedContacts.find(c => c.id === currentTargetId);
+            const trustBtn = document.getElementById('trust-toggle');
+            if (contact?.isPinned) {
+                trustBtn.textContent = 'Trusted ✓';
+                trustBtn.className = 'trust-toggle trusted';
+            } else {
+                trustBtn.textContent = 'Add to Trusted';
+                trustBtn.className = 'trust-toggle';
+            }
+            
             session.history.forEach(m => renderMsg(m.sender, m.text, m.type, m.timestamp));
             document.getElementById('msg-input').disabled = !session.remotePubK;
             document.getElementById('send-btn').disabled = !session.remotePubK;
@@ -446,7 +499,7 @@
     async function sendRegistration() {
         if (!lobbyConn?.open) return;
         const pub = await window.crypto.subtle.exportKey("jwk", myKeys.publicKey);
-        lobbyConn.send({ type: 'REGISTER', data: { name: myName, id: peer.id, pub, expires: Date.now() + 60000 } });
+        lobbyConn.send({ type: 'REGISTER', data: { name: myName, id: peer.id, pub, expires: Date.now() + 90000 } });
     }
     function startTimer() {
         let tl = 300; const d = document.getElementById('timer-display');
@@ -455,8 +508,58 @@
             if (tl <= 0) toggleDiscoverable();
         }, 1000);
     }
-    function showKeyInfo(u, n) { document.getElementById('overlay-username').innerText = u; document.getElementById('overlay-key-text').innerText = n; document.getElementById('key-overlay').classList.remove('hidden'); }
+    function showKeyInfo(u, n) { 
+        document.getElementById('overlay-username').innerText = u; 
+        document.getElementById('overlay-key-text').innerText = n; 
+        document.getElementById('key-overlay').classList.remove('hidden'); 
+    }
     function closeKeyInfo() { document.getElementById('key-overlay').classList.add('hidden'); }
+    async function toggleCurrentUserTrust() {
+        if (!currentTargetId) return;
+        const contact = savedContacts.find(c => c.id === currentTargetId);
+        if (!contact) return;
+        
+        contact.isPinned = !contact.isPinned;
+        await saveContact(contact.id, contact.name, contact.pub, contact.isPinned);
+        savedContacts = await loadContacts();
+        refreshAddressBookUI();
+        refreshChatBox();
+        
+        const action = contact.isPinned ? 'added to trusted contacts' : 'removed from trusted contacts';
+        showNotification(`${contact.name} ${action}`, 'success');
+    }
+    
+    async function togglePin(userId) {
+        const contact = savedContacts.find(c => c.id === userId);
+        if (!contact) return;
+        
+        contact.isPinned = !contact.isPinned;
+        await saveContact(contact.id, contact.name, contact.pub, contact.isPinned);
+        savedContacts = await loadContacts();
+        refreshAddressBookUI();
+        
+        const action = contact.isPinned ? 'pinned as trusted' : 'unpinned';
+        showNotification(`${contact.name} ${action}`, 'success');
+    }
+    
+    function cleanupInactiveUsers() {
+        const now = Date.now();
+        let cleaned = false;
+        
+        // Remove expired users from discovery list
+        groupAddressBook = groupAddressBook.filter(user => {
+            if (user.expires && user.expires < now) {
+                cleaned = true;
+                return false;
+            }
+            return true;
+        });
+        
+        if (cleaned) {
+            refreshAddressBookUI();
+        }
+    }
+    
     function showNotification(message, type = 'info') {
         const notification = document.createElement('div');
         notification.style.cssText = `
