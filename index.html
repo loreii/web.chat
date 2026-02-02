@@ -57,7 +57,9 @@
         #my-profile-modal canvas { width: 100px; height: 100px; display: block; margin: 10px auto; border-radius: 10px; }
 
         input { background: #222; border: 1px solid #444; color: white; padding: 12px; border-radius: 6px; width: 100%; box-sizing: border-box; margin-bottom: 8px; }
-        button { padding: 10px 15px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; background: var(--accent); color: white; }
+        input:focus { outline: none; border-color: var(--primary); }
+        button { padding: 10px 15px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; background: var(--accent); color: white; transition: background 0.2s; }
+        button:hover:not(:disabled) { opacity: 0.9; }
         button:disabled { background: #444; cursor: not-allowed; }
         .hidden { display: none !important; }
 
@@ -69,6 +71,11 @@
         #setup-overlay { position: absolute; top: 5%; left: 50%; transform: translateX(-50%); z-index: 1000; width: 450px; max-height: 90vh; overflow-y: auto; background: var(--card); padding: 30px; border-radius: 15px; border: 1px solid #333; }
         .info-section { margin-top: 25px; text-align: left; font-size: 0.85em; color: #aaa; line-height: 1.5; border-top: 1px solid #333; padding-top: 15px; }
         .info-section h4 { color: var(--primary); margin: 15px 0 5px 0; font-size: 0.9em; text-transform: uppercase; }
+        
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -212,8 +219,10 @@
         });
         peer.on('connection', conn => handleConnectionLogic(conn));
         peer.on('error', err => {
+            console.error('Peer error:', err);
             if (err.type === 'server-error' || err.type === 'socket-error') {
                 backoffUntil = Date.now() + 60000;
+                showNotification('Connection error. Retrying in 1 minute...', 'error');
             }
         });
     }
@@ -315,8 +324,14 @@
                 refreshAddressBookUI();
                 if (currentTargetId === conn.peer) refreshChatBox();
             } else if (data.type === 'CHAT') {
-                const dec = await window.crypto.subtle.decrypt({ name: "RSA-OAEP" }, myKeys.privateKey, data.payload);
-                addHistory(conn.peer, data.sender, new TextDecoder().decode(dec), 'received');
+                try {
+                    const dec = await window.crypto.subtle.decrypt({ name: "RSA-OAEP" }, myKeys.privateKey, data.payload);
+                    const message = new TextDecoder().decode(dec);
+                    addHistory(conn.peer, data.sender, message, 'received', data.timestamp);
+                } catch (error) {
+                    console.error('Decryption failed:', error);
+                    addHistory(conn.peer, 'System', 'Failed to decrypt message', 'received');
+                }
             }
         });
     }
@@ -330,11 +345,18 @@
     async function sendSecureMsg() {
         const input = document.getElementById('msg-input');
         const session = sessions.get(currentTargetId);
-        if (!input.value || !session?.remotePubK) return;
-        const enc = await window.crypto.subtle.encrypt({ name: "RSA-OAEP" }, session.remotePubK, new TextEncoder().encode(input.value));
-        session.conn.send({ type: 'CHAT', payload: enc, sender: myName });
-        addHistory(currentTargetId, myName, input.value, 'sent');
-        input.value = "";
+        if (!input.value.trim() || !session?.remotePubK) return;
+        
+        try {
+            const message = input.value.trim();
+            const enc = await window.crypto.subtle.encrypt({ name: "RSA-OAEP" }, session.remotePubK, new TextEncoder().encode(message));
+            session.conn.send({ type: 'CHAT', payload: enc, sender: myName, timestamp: Date.now() });
+            addHistory(currentTargetId, myName, message, 'sent');
+            input.value = "";
+        } catch (error) {
+            console.error('Encryption failed:', error);
+            alert('Failed to send message. Check connection.');
+        }
     }
 
     function drawIcon(canvasId, n) {
@@ -380,7 +402,7 @@
             document.getElementById('chat-header').classList.remove('hidden');
             document.getElementById('recipient-name').innerText = session.remoteName;
             if (session.remoteJWK_N) drawIcon('recipient-thumb', session.remoteJWK_N);
-            session.history.forEach(m => renderMsg(m.sender, m.text, m.type));
+            session.history.forEach(m => renderMsg(m.sender, m.text, m.type, m.timestamp));
             document.getElementById('msg-input').disabled = !session.remotePubK;
             document.getElementById('send-btn').disabled = !session.remotePubK;
             document.getElementById('msg-input').placeholder = session.remotePubK ? "Message..." : "Syncing keys...";
@@ -400,15 +422,26 @@
         });
     }
 
-    function renderMsg(u, t, type) {
-        const d = document.createElement('div'); d.className = `msg ${type}`;
-        d.innerHTML = `<small><b>${u}</b></small><br>${t} <span class="verified-badge">✓ Verified Identity</span>`;
-        const b = document.getElementById('chat-box'); b.appendChild(d); b.scrollTop = b.scrollHeight;
+    function renderMsg(u, t, type, timestamp) {
+        const d = document.createElement('div'); 
+        d.className = `msg ${type}`;
+        const time = timestamp ? new Date(timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
+        d.innerHTML = `<small><b>${u}</b> ${time}</small><br>${escapeHtml(t)} <span class="verified-badge">✓ Verified Identity</span>`;
+        const b = document.getElementById('chat-box'); 
+        b.appendChild(d); 
+        b.scrollTop = b.scrollHeight;
     }
-    function addHistory(pid, s, t, type) {
+    
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    function addHistory(pid, s, t, type, timestamp = Date.now()) {
         if (!sessions.has(pid)) sessions.set(pid, { history: [], remoteName: pid });
-        sessions.get(pid).history.push({ sender: s, text: t, type });
-        if (pid === currentTargetId) renderMsg(s, t, type);
+        sessions.get(pid).history.push({ sender: s, text: t, type, timestamp });
+        if (pid === currentTargetId) renderMsg(s, t, type, timestamp);
     }
     async function sendRegistration() {
         if (!lobbyConn?.open) return;
@@ -424,7 +457,24 @@
     }
     function showKeyInfo(u, n) { document.getElementById('overlay-username').innerText = u; document.getElementById('overlay-key-text').innerText = n; document.getElementById('key-overlay').classList.remove('hidden'); }
     function closeKeyInfo() { document.getElementById('key-overlay').classList.add('hidden'); }
-    function copyOverlayKey() { navigator.clipboard.writeText(document.getElementById('overlay-key-text').innerText); alert("Copied"); }
+    function showNotification(message, type = 'info') {
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+            position: fixed; top: 20px; right: 20px; z-index: 3000;
+            padding: 12px 20px; border-radius: 8px; color: white; font-size: 0.9em;
+            background: ${type === 'error' ? 'var(--danger)' : type === 'success' ? 'var(--accent)' : 'var(--primary)'};
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3); animation: slideIn 0.3s ease;
+        `;
+        notification.textContent = message;
+        document.body.appendChild(notification);
+        setTimeout(() => notification.remove(), 4000);
+    }
+    
+    function copyOverlayKey() { 
+        navigator.clipboard.writeText(document.getElementById('overlay-key-text').innerText)
+            .then(() => showNotification('Key copied to clipboard', 'success'))
+            .catch(() => showNotification('Failed to copy key', 'error'));
+    }
     function inspectRemoteKey() { const s = sessions.get(currentTargetId); if (s?.remoteJWK_N) showKeyInfo(s.remoteName, s.remoteJWK_N); }
     function toggleProfile() { const m = document.getElementById('my-profile-modal'); m.style.display = m.style.display === 'block' ? 'none' : 'block'; }
     function directConnect() { const id = document.getElementById('direct-id-input').value.trim(); if (id && id !== peer.id) selectUser(id); }
