@@ -588,6 +588,19 @@
         
         conn.on('close', () => {
             console.log('🔌 Connection closed with:', conn.peer);
+            // Clean up session state
+            if (sessions.has(conn.peer)) {
+                const session = sessions.get(conn.peer);
+                session.keyExchangeComplete = false;
+                session.conn = null;
+                // Keep history and contact info, but reset connection state
+            }
+            
+            // Update UI if this was the current chat
+            if (currentTargetId === conn.peer) {
+                refreshChatBox();
+            }
+            refreshAddressBookUI();
         });
     }
 
@@ -716,10 +729,28 @@
 
     async function selectUser(id) {
         currentTargetId = id;
+        
+        // Check if we need to create a new connection
         if (!sessions.has(id)) {
-            sessions.set(id, await createSession(id));
-            handleConnectionLogic(peer.connect(id));
+            sessions.set(id, {
+                conn: null,
+                remotePubK: null,
+                remoteName: "Connecting...",
+                remoteJWK_N: null,
+                history: [],
+                keyExchangeComplete: false
+            });
         }
+        
+        const session = sessions.get(id);
+        
+        // If no active connection, create new one
+        if (!session.conn || !session.conn.open) {
+            console.log('🔄 Creating new connection to:', id);
+            const newConn = peer.connect(id);
+            handleConnectionLogic(newConn);
+        }
+        
         refreshChatBox(); 
         refreshAddressBookUI();
         
@@ -781,13 +812,15 @@
             container.appendChild(l);
             list.filter(u => u.id !== peer.id).forEach(user => {
                 const d = document.createElement('div');
-                const isActive = sessions.has(user.id) && sessions.get(user.id).conn?.open;
+                const session = sessions.get(user.id);
+                const isActive = session && session.conn && session.conn.open;
                 const isExpired = user.expires && user.expires < Date.now();
                 const isPinned = user.isPinned;
                 d.className = `address-book-item ${isActive ? 'active-session' : ''} ${currentTargetId === user.id ? 'selected' : ''} ${isExpired ? 'expired' : ''} ${isPinned ? 'pinned' : ''}`;
                 
                 const offlineText = isExpired ? ' (offline)' : '';
-                d.innerHTML = `<canvas id="icon-${user.id}"></canvas> <span>${user.name}${offlineText}</span>`;
+                const statusText = isActive ? ' 🟢' : (session && session.history.length > 0 ? ' ⚪' : '');
+                d.innerHTML = `<canvas id="icon-${user.id}"></canvas> <span>${user.name}${offlineText}${statusText}</span>`;
                 d.onclick = () => selectUser(user.id);
                 container.appendChild(d);
                 drawIcon(`icon-${user.id}`, user.pub.n);
@@ -832,7 +865,7 @@
             session.history.forEach(m => renderMsg(m.sender, m.text, m.type, m.timestamp));
             document.getElementById('msg-input').disabled = !session.keyExchangeComplete;
             document.getElementById('send-btn').disabled = !session.keyExchangeComplete;
-            document.getElementById('msg-input').placeholder = session.keyExchangeComplete ? "Message..." : "Establishing secure session...";
+            document.getElementById('msg-input').placeholder = session.keyExchangeComplete ? "Message..." : (session.conn ? "Establishing secure session..." : "Click to reconnect...");
         } else {
             document.getElementById('chat-header').classList.add('hidden');
             box.innerHTML = '<div style="text-align:center; color:#444; margin-top:20%;">Select a recipient.</div>';
