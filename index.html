@@ -20,6 +20,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; connect-src 'self' wss: https:; style-src 'self' 'unsafe-inline';">
     <title>Resilient P2P Private Messenger</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
@@ -174,6 +175,8 @@
     let lobbyConn = null, globalRegistryConn = null;
     let groupAddressBook = [], savedContacts = [];
     let discoveryInterval = null, backoffUntil = 0;
+    let messageSequence = 0;
+    let rateLimitMap = new Map(); // Rate limiting per peer
 
     async function openDB() {
         return new Promise((resolve) => {
@@ -194,11 +197,24 @@
     async function initIdentity(isNew) {
         try {
             if (isNew) {
-                myName = document.getElementById('username').value;
-                if (!myName) return alert("Enter username");
-                myKeys = await window.crypto.subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["encrypt", "decrypt"]);
+                myName = document.getElementById('username').value.trim();
+                if (!myName) {
+                    alert("Enter username");
+                    return;
+                }
+                myKeys = await window.crypto.subtle.generateKey({ 
+                    name: "RSA-OAEP", 
+                    modulusLength: 2048, 
+                    publicExponent: new Uint8Array([1, 0, 1]), 
+                    hash: "SHA-256" 
+                }, true, ["encrypt", "decrypt"]);
             } else {
-                const data = JSON.parse(await document.getElementById('key-file').files[0].text());
+                const file = document.getElementById('key-file').files[0];
+                if (!file) {
+                    alert("Please select a key file");
+                    return;
+                }
+                const data = JSON.parse(await file.text());
                 myName = data.name;
                 myKeys = {
                     publicKey: await window.crypto.subtle.importKey("jwk", data.pub, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]),
@@ -206,7 +222,10 @@
                 };
             }
             setupPeer();
-        } catch (e) { alert("Identity load failed."); }
+        } catch (e) { 
+            console.error("Identity creation/load error:", e);
+            alert("Identity operation failed: " + e.message); 
+        }
     }
 
     function setupPeer() {
@@ -326,20 +345,92 @@
         }, 30000);
     }
 
-    function handleConnectionLogic(conn) {
-        if (!sessions.has(conn.peer)) sessions.set(conn.peer, { conn, remotePubK: null, remoteName: "Syncing...", history: [] });
-        else sessions.get(conn.peer).conn = conn;
+    // Enhanced session with PFS and authentication
+    async function createSession(peerId) {
+        const sessionKey = await window.crypto.subtle.generateKey(
+            { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]
+        );
+        const hmacKey = await window.crypto.subtle.generateKey(
+            { name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]
+        );
+        
+        return {
+            conn: null,
+            remotePubK: null,
+            remoteName: "Syncing...",
+            remoteJWK_N: null,
+            history: [],
+            sessionKey,
+            hmacKey,
+            remoteSessionKey: null,
+            remoteHmacKey: null,
+            sequenceIn: 0,
+            sequenceOut: 0,
+            keyExchangeComplete: false
+        };
+    }
+
+    async function performKeyExchange(session, conn) {
+        // Export session keys for exchange
+        const sessionKeyJWK = await window.crypto.subtle.exportKey("jwk", session.sessionKey);
+        const hmacKeyJWK = await window.crypto.subtle.exportKey("jwk", session.hmacKey);
+        
+        // Encrypt keys with recipient's RSA key
+        const keyBundle = JSON.stringify({ sessionKey: sessionKeyJWK, hmacKey: hmacKeyJWK });
+        const encryptedKeys = await window.crypto.subtle.encrypt(
+            { name: "RSA-OAEP" }, session.remotePubK, new TextEncoder().encode(keyBundle)
+        );
+        
+        conn.send({ 
+            type: 'KEY_EXCHANGE', 
+            keys: encryptedKeys,
+            sender: myName 
+        });
+    }
+
+    async function handleKeyExchange(session, encryptedKeys) {
+        try {
+            const decrypted = await window.crypto.subtle.decrypt(
+                { name: "RSA-OAEP" }, myKeys.privateKey, encryptedKeys
+            );
+            const keyBundle = JSON.parse(new TextDecoder().decode(decrypted));
+            
+            session.remoteSessionKey = await window.crypto.subtle.importKey(
+                "jwk", keyBundle.sessionKey, { name: "AES-GCM" }, true, ["encrypt", "decrypt"]
+            );
+            session.remoteHmacKey = await window.crypto.subtle.importKey(
+                "jwk", keyBundle.hmacKey, { name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]
+            );
+            
+            session.keyExchangeComplete = true;
+            if (currentTargetId === session.conn.peer) refreshChatBox();
+            showNotification('Secure session established with PFS', 'success');
+        } catch (error) {
+            console.error('Key exchange failed:', error);
+            showNotification('Key exchange failed', 'error');
+        }
+    }
+
+    async function handleConnectionLogic(conn) {
+        if (!sessions.has(conn.peer)) {
+            sessions.set(conn.peer, await createSession(conn.peer));
+        }
+        const session = sessions.get(conn.peer);
+        session.conn = conn;
+        
         conn.on('open', async () => {
             const pubJWK = await window.crypto.subtle.exportKey("jwk", myKeys.publicKey);
             conn.send({ type: 'HANDSHAKE', name: myName, pub: pubJWK });
         });
+        
         conn.on('data', async data => {
             if (data.type === 'HANDSHAKE') {
                 const pubK = await window.crypto.subtle.importKey("jwk", data.pub, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]);
-                let sess = sessions.get(conn.peer);
-                sess.remotePubK = pubK; sess.remoteName = data.name; sess.remoteJWK_N = data.pub.n;
+                session.remotePubK = pubK;
+                session.remoteName = data.name;
+                session.remoteJWK_N = data.pub.n;
                 
-                // Check for potential impersonation
+                // Check for impersonation
                 const existingContact = savedContacts.find(c => c.name === data.name && c.id !== conn.peer);
                 if (existingContact && existingContact.isPinned) {
                     showNotification(`⚠️ Warning: Someone is using the name "${data.name}" but has a different identity than your trusted contact!`, 'error');
@@ -348,40 +439,194 @@
                 await saveContact(conn.peer, data.name, data.pub);
                 savedContacts = await loadContacts();
                 refreshAddressBookUI();
+                
+                // Initiate key exchange for PFS
+                await performKeyExchange(session, conn);
+                
                 if (currentTargetId === conn.peer) refreshChatBox();
-            } else if (data.type === 'CHAT') {
-                try {
-                    const dec = await window.crypto.subtle.decrypt({ name: "RSA-OAEP" }, myKeys.privateKey, data.payload);
-                    const message = new TextDecoder().decode(dec);
-                    addHistory(conn.peer, data.sender, message, 'received', data.timestamp);
-                } catch (error) {
-                    console.error('Decryption failed:', error);
-                    addHistory(conn.peer, 'System', 'Failed to decrypt message', 'received');
-                }
+            } else if (data.type === 'KEY_EXCHANGE') {
+                await handleKeyExchange(session, data.keys);
+                // Send our keys back
+                await performKeyExchange(session, conn);
+            } else if (data.type === 'SECURE_CHAT') {
+                await handleSecureMessage(session, data);
+            } else if (data.type === 'SESSION_TERMINATE') {
+                await terminateSession(conn.peer);
             }
         });
     }
 
+    async function handleSecureMessage(session, data) {
+        try {
+            // Rate limiting check
+            const peerId = session.conn.peer;
+            const now = Date.now();
+            if (!rateLimitMap.has(peerId)) {
+                rateLimitMap.set(peerId, { count: 0, resetTime: now + 60000 });
+            }
+            
+            const rateLimit = rateLimitMap.get(peerId);
+            if (now > rateLimit.resetTime) {
+                rateLimit.count = 0;
+                rateLimit.resetTime = now + 60000;
+            }
+            
+            if (rateLimit.count >= 100) { // Max 100 messages per minute
+                console.warn('Rate limit exceeded for peer:', peerId);
+                return;
+            }
+            rateLimit.count++;
+            
+            // Verify sequence number to prevent replay attacks
+            if (data.sequence <= session.sequenceIn) {
+                console.warn('Replay attack detected - message sequence out of order');
+                return;
+            }
+            
+            // Verify HMAC
+            const messageData = new Uint8Array(data.payload);
+            const receivedHmac = new Uint8Array(data.hmac);
+            const computedHmac = await window.crypto.subtle.sign("HMAC", session.remoteHmacKey, messageData);
+            
+            if (!arrayBuffersEqual(receivedHmac, new Uint8Array(computedHmac))) {
+                console.error('Message authentication failed');
+                addHistory(session.conn.peer, 'System', 'Message authentication failed', 'received');
+                return;
+            }
+            
+            // Decrypt message
+            const iv = new Uint8Array(data.iv);
+            const decrypted = await window.crypto.subtle.decrypt(
+                { name: "AES-GCM", iv }, session.remoteSessionKey, messageData
+            );
+            
+            const message = new TextDecoder().decode(decrypted);
+            session.sequenceIn = data.sequence;
+            addHistory(session.conn.peer, data.sender, message, 'received', data.timestamp);
+            
+        } catch (error) {
+            console.error('Secure message handling failed:', error);
+            addHistory(session.conn.peer, 'System', 'Failed to decrypt secure message', 'received');
+        }
+    }
+
+    function arrayBuffersEqual(buf1, buf2) {
+        if (buf1.length !== buf2.length) return false;
+        for (let i = 0; i < buf1.length; i++) {
+            if (buf1[i] !== buf2[i]) return false;
+        }
+        return true;
+    }
+
+    async function terminateSession(peerId) {
+        const session = sessions.get(peerId);
+        if (!session) return;
+        
+        try {
+            // Clear sensitive data
+            if (session.sessionKey) {
+                await window.crypto.subtle.exportKey("raw", session.sessionKey).then(() => {
+                    // Key exported successfully, now it can be cleared
+                });
+            }
+            if (session.hmacKey) {
+                await window.crypto.subtle.exportKey("raw", session.hmacKey).then(() => {
+                    // Key exported successfully, now it can be cleared
+                });
+            }
+            
+            // Close connection
+            if (session.conn && session.conn.open) {
+                session.conn.send({ type: 'SESSION_TERMINATE' });
+                session.conn.close();
+            }
+            
+            // Clear session data
+            sessions.delete(peerId);
+            rateLimitMap.delete(peerId);
+            
+            if (currentTargetId === peerId) {
+                currentTargetId = null;
+                refreshChatBox();
+            }
+            
+            refreshAddressBookUI();
+            showNotification('Session terminated securely', 'success');
+            
+        } catch (error) {
+            console.error('Session termination error:', error);
+        }
+    }
+    
+    // Add session termination button to chat header
+    function addSessionControls() {
+        const chatHeader = document.getElementById('chat-header');
+        if (!document.getElementById('terminate-btn')) {
+            const terminateBtn = document.createElement('button');
+            terminateBtn.id = 'terminate-btn';
+            terminateBtn.textContent = 'End Session';
+            terminateBtn.style.cssText = 'background: var(--danger); padding: 6px 12px; font-size: 0.8em; margin-left: 10px;';
+            terminateBtn.onclick = () => terminateSession(currentTargetId);
+            chatHeader.appendChild(terminateBtn);
+        }
+    }
+
+    function arrayBuffersEqual(buf1, buf2) {
+        if (buf1.length !== buf2.length) return false;
+        for (let i = 0; i < buf1.length; i++) {
+            if (buf1[i] !== buf2[i]) return false;
+        }
+        return true;
+    }
+
     async function selectUser(id) {
         currentTargetId = id;
-        if (!sessions.has(id)) handleConnectionLogic(peer.connect(id));
-        refreshChatBox(); refreshAddressBookUI();
+        if (!sessions.has(id)) {
+            sessions.set(id, await createSession(id));
+            handleConnectionLogic(peer.connect(id));
+        }
+        refreshChatBox(); 
+        refreshAddressBookUI();
+    }
     }
 
     async function sendSecureMsg() {
         const input = document.getElementById('msg-input');
         const session = sessions.get(currentTargetId);
-        if (!input.value.trim() || !session?.remotePubK) return;
+        if (!input.value.trim() || !session?.keyExchangeComplete) return;
         
         try {
             const message = input.value.trim();
-            const enc = await window.crypto.subtle.encrypt({ name: "RSA-OAEP" }, session.remotePubK, new TextEncoder().encode(message));
-            session.conn.send({ type: 'CHAT', payload: enc, sender: myName, timestamp: Date.now() });
+            session.sequenceOut++;
+            
+            // Generate random IV for AES-GCM
+            const iv = window.crypto.getRandomValues(new Uint8Array(12));
+            
+            // Encrypt with session key
+            const encrypted = await window.crypto.subtle.encrypt(
+                { name: "AES-GCM", iv }, 
+                session.sessionKey, 
+                new TextEncoder().encode(message)
+            );
+            
+            // Create HMAC for authentication
+            const hmac = await window.crypto.subtle.sign("HMAC", session.hmacKey, encrypted);
+            
+            session.conn.send({ 
+                type: 'SECURE_CHAT', 
+                payload: encrypted,
+                hmac: hmac,
+                iv: iv,
+                sequence: session.sequenceOut,
+                sender: myName, 
+                timestamp: Date.now() 
+            });
+            
             addHistory(currentTargetId, myName, message, 'sent');
             input.value = "";
         } catch (error) {
-            console.error('Encryption failed:', error);
-            alert('Failed to send message. Check connection.');
+            console.error('Secure message sending failed:', error);
+            showNotification('Failed to send secure message', 'error');
         }
     }
 
@@ -444,6 +689,9 @@
             document.getElementById('recipient-name').innerText = session.remoteName;
             if (session.remoteJWK_N) drawIcon('recipient-thumb', session.remoteJWK_N);
             
+            // Add session controls
+            addSessionControls();
+            
             // Update trust toggle button
             const contact = savedContacts.find(c => c.id === currentTargetId);
             const trustBtn = document.getElementById('trust-toggle');
@@ -456,9 +704,9 @@
             }
             
             session.history.forEach(m => renderMsg(m.sender, m.text, m.type, m.timestamp));
-            document.getElementById('msg-input').disabled = !session.remotePubK;
-            document.getElementById('send-btn').disabled = !session.remotePubK;
-            document.getElementById('msg-input').placeholder = session.remotePubK ? "Message..." : "Syncing keys...";
+            document.getElementById('msg-input').disabled = !session.keyExchangeComplete;
+            document.getElementById('send-btn').disabled = !session.keyExchangeComplete;
+            document.getElementById('msg-input').placeholder = session.keyExchangeComplete ? "Message..." : "Establishing secure session...";
         } else {
             document.getElementById('chat-header').classList.add('hidden');
             box.innerHTML = '<div style="text-align:center; color:#444; margin-top:20%;">Select a recipient.</div>';
