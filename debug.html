@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebChat Debug Test</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+</head>
+<body>
+    <h2>WebChat Connection Test</h2>
+    <div>
+        <input type="text" id="username" placeholder="Your name" value="TestUser">
+        <button onclick="createPeer()">Create Peer</button>
+    </div>
+    <div>
+        <input type="text" id="targetId" placeholder="Target Peer ID">
+        <button onclick="connectToPeer()">Connect</button>
+    </div>
+    <div>
+        <input type="text" id="message" placeholder="Test message">
+        <button onclick="sendMessage()">Send</button>
+    </div>
+    <div id="status"></div>
+    <div id="messages"></div>
+
+    <script>
+        let peer, conn;
+        
+        function log(msg) {
+            document.getElementById('status').innerHTML += '<br>' + msg;
+            console.log(msg);
+        }
+        
+        function createPeer() {
+            const username = document.getElementById('username').value;
+            const peerId = username + '-' + Math.floor(Math.random()*9999);
+            
+            peer = new Peer(peerId, {
+                host: '0.peerjs.com',
+                port: 443,
+                secure: true,
+                debug: 1
+            });
+            
+            peer.on('open', (id) => {
+                log('✅ Peer created: ' + id);
+            });
+            
+            peer.on('connection', (connection) => {
+                log('📞 Incoming connection from: ' + connection.peer);
+                setupConnection(connection);
+            });
+            
+            peer.on('error', (err) => {
+                log('❌ Peer error: ' + err.type + ' - ' + err.message);
+            });
+        }
+        
+        function connectToPeer() {
+            const targetId = document.getElementById('targetId').value;
+            if (!peer || !targetId) return;
+            
+            log('🔄 Connecting to: ' + targetId);
+            conn = peer.connect(targetId);
+            setupConnection(conn);
+        }
+        
+        function setupConnection(connection) {
+            conn = connection;
+            
+            conn.on('open', () => {
+                log('✅ Connection established with: ' + conn.peer);
+                conn.send({ type: 'test', message: 'Hello from ' + peer.id });
+            });
+            
+            conn.on('data', (data) => {
+                log('📨 Received: ' + JSON.stringify(data));
+                document.getElementById('messages').innerHTML += '<br>From ' + conn.peer + ': ' + JSON.stringify(data);
+            });
+            
+            conn.on('error', (err) => {
+                log('❌ Connection error: ' + err);
+            });
+            
+            conn.on('close', () => {
+                log('🔌 Connection closed');
+            });
+        }
+        
+        function sendMessage() {
+            const msg = document.getElementById('message').value;
+            if (!conn || !msg) return;
+            
+            conn.send({ type: 'message', text: msg, from: peer.id });
+            log('📤 Sent: ' + msg);
+        }
+    </script>
+</body>
+</html>

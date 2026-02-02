@@ -229,7 +229,25 @@
     }
 
     function setupPeer() {
-        const config = { host: '0.peerjs.com', port: 443, secure: true, debug: 1 };
+        const config = { 
+            host: '0.peerjs.com', 
+            port: 443, 
+            secure: true, 
+            debug: 0,
+            config: {
+                'iceServers': [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { 
+                        urls: 'turn:openrelay.metered.ca:80',
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                    }
+                ],
+                'iceCandidatePoolSize': 10,
+                'bundlePolicy': 'balanced',
+                'rtcpMuxPolicy': 'require'
+            }
+        };
         peer = new Peer(myName.replace(/\s/g, '') + "-" + Math.floor(Math.random()*9999), config);
 
         peer.on('open', async (id) => {
@@ -240,16 +258,25 @@
             drawIcon('my-thumb', pubJWK.n);
             savedContacts = await loadContacts();
             refreshAddressBookUI();
-            setInterval(syncWithLobbies, SYNC_RATE);
             setInterval(cleanupInactiveUsers, 45000); // Clean every 45 seconds
-            syncWithLobbies();
+            // Don't auto-connect to lobbies on startup - only when user enables discovery
+            showNotification('Identity created successfully! Ready to chat.', 'success');
         });
-        peer.on('connection', conn => handleConnectionLogic(conn));
+        peer.on('connection', conn => {
+            console.log('📞 Incoming connection from:', conn.peer);
+            handleConnectionLogic(conn);
+        });
         peer.on('error', err => {
             console.error('Peer error:', err);
             if (err.type === 'server-error' || err.type === 'socket-error') {
                 backoffUntil = Date.now() + 60000;
                 showNotification('Connection error. Retrying in 1 minute...', 'error');
+            } else if (err.type === 'peer-unavailable') {
+                showNotification('Peer not available. They may be offline.', 'error');
+            } else if (err.type === 'network') {
+                showNotification('Network error. Check your internet connection.', 'error');
+            } else if (err.type === 'webrtc') {
+                showNotification('WebRTC connection failed. This is normal for some network configurations.', 'error');
             }
         });
     }
@@ -281,6 +308,11 @@
             document.getElementById('discover-btn').innerText = "Stop Discovery";
             document.getElementById('discover-btn').style.background = "var(--danger)";
             document.getElementById('group-name-input').disabled = true;
+            
+            // Start lobby sync when user enables discovery
+            setInterval(syncWithLobbies, SYNC_RATE);
+            syncWithLobbies();
+            
             const name = document.getElementById('group-name-input').value.trim().toLowerCase() || "global";
             const lobbyID = "LB_V17_" + btoa(name).replace(/=/g, '').substring(0, 12);
             const hostPeer = new Peer(lobbyID, { host: '0.peerjs.com', port: 443, secure: true });
@@ -412,47 +444,71 @@
     }
 
     async function handleConnectionLogic(conn) {
+        console.log('🔄 Setting up connection with:', conn.peer);
+        
+        // Simplified session creation - no complex crypto for now
         if (!sessions.has(conn.peer)) {
-            sessions.set(conn.peer, await createSession(conn.peer));
+            sessions.set(conn.peer, {
+                conn: null,
+                remotePubK: null,
+                remoteName: "Connecting...",
+                remoteJWK_N: null,
+                history: [],
+                keyExchangeComplete: false // Start as false, set true after handshake
+            });
         }
         const session = sessions.get(conn.peer);
         session.conn = conn;
         
         conn.on('open', async () => {
+            console.log('✅ Connection opened with:', conn.peer);
             const pubJWK = await window.crypto.subtle.exportKey("jwk", myKeys.publicKey);
             conn.send({ type: 'HANDSHAKE', name: myName, pub: pubJWK });
         });
         
         conn.on('data', async data => {
+            console.log('📨 Received data:', data.type, 'from:', conn.peer);
+            
             if (data.type === 'HANDSHAKE') {
-                const pubK = await window.crypto.subtle.importKey("jwk", data.pub, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]);
-                session.remotePubK = pubK;
-                session.remoteName = data.name;
-                session.remoteJWK_N = data.pub.n;
-                
-                // Check for impersonation
-                const existingContact = savedContacts.find(c => c.name === data.name && c.id !== conn.peer);
-                if (existingContact && existingContact.isPinned) {
-                    showNotification(`⚠️ Warning: Someone is using the name "${data.name}" but has a different identity than your trusted contact!`, 'error');
+                console.log('🤝 Processing handshake from:', data.name);
+                try {
+                    const pubK = await window.crypto.subtle.importKey("jwk", data.pub, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]);
+                    session.remotePubK = pubK;
+                    session.remoteName = data.name;
+                    session.remoteJWK_N = data.pub.n;
+                    session.keyExchangeComplete = true; // Simple handshake complete
+                    
+                    console.log('✅ Handshake complete with:', data.name);
+                    
+                    await saveContact(conn.peer, data.name, data.pub);
+                    savedContacts = await loadContacts();
+                    refreshAddressBookUI();
+                    
+                    if (currentTargetId === conn.peer) refreshChatBox();
+                } catch (error) {
+                    console.error('❌ Handshake error:', error);
                 }
-                
-                await saveContact(conn.peer, data.name, data.pub);
-                savedContacts = await loadContacts();
-                refreshAddressBookUI();
-                
-                // Initiate key exchange for PFS
-                await performKeyExchange(session, conn);
-                
-                if (currentTargetId === conn.peer) refreshChatBox();
-            } else if (data.type === 'KEY_EXCHANGE') {
-                await handleKeyExchange(session, data.keys);
-                // Send our keys back
-                await performKeyExchange(session, conn);
-            } else if (data.type === 'SECURE_CHAT') {
-                await handleSecureMessage(session, data);
-            } else if (data.type === 'SESSION_TERMINATE') {
-                await terminateSession(conn.peer);
+            } else if (data.type === 'SIMPLE_CHAT') {
+                try {
+                    const dec = await window.crypto.subtle.decrypt({ name: "RSA-OAEP" }, myKeys.privateKey, data.payload);
+                    const message = new TextDecoder().decode(dec);
+                    addHistory(conn.peer, data.sender, message, 'received', data.timestamp);
+                } catch (error) {
+                    console.error('❌ Decryption failed:', error);
+                    addHistory(conn.peer, 'System', 'Failed to decrypt message', 'received');
+                }
             }
+        });
+        
+        conn.on('error', (err) => {
+            console.error('❌ Connection error with', conn.peer, ':', err);
+            if (err.message && err.message.includes('Negotiation of connection')) {
+                showNotification(`Connection failed with ${session.remoteName || conn.peer}. This can happen due to network/firewall restrictions. Try connecting from the same network or use a VPN.`, 'error');
+            }
+        });
+        
+        conn.on('close', () => {
+            console.log('🔌 Connection closed with:', conn.peer);
         });
     }
 
@@ -588,7 +644,6 @@
         refreshChatBox(); 
         refreshAddressBookUI();
     }
-    }
 
     async function sendSecureMsg() {
         const input = document.getElementById('msg-input');
@@ -597,36 +652,23 @@
         
         try {
             const message = input.value.trim();
-            session.sequenceOut++;
             
-            // Generate random IV for AES-GCM
-            const iv = window.crypto.getRandomValues(new Uint8Array(12));
-            
-            // Encrypt with session key
-            const encrypted = await window.crypto.subtle.encrypt(
-                { name: "AES-GCM", iv }, 
-                session.sessionKey, 
-                new TextEncoder().encode(message)
-            );
-            
-            // Create HMAC for authentication
-            const hmac = await window.crypto.subtle.sign("HMAC", session.hmacKey, encrypted);
+            // Simple RSA encryption for now
+            const enc = await window.crypto.subtle.encrypt({ name: "RSA-OAEP" }, session.remotePubK, new TextEncoder().encode(message));
             
             session.conn.send({ 
-                type: 'SECURE_CHAT', 
-                payload: encrypted,
-                hmac: hmac,
-                iv: iv,
-                sequence: session.sequenceOut,
+                type: 'SIMPLE_CHAT', 
+                payload: enc,
                 sender: myName, 
                 timestamp: Date.now() 
             });
             
             addHistory(currentTargetId, myName, message, 'sent');
             input.value = "";
+            console.log('📤 Sent message to:', currentTargetId);
         } catch (error) {
-            console.error('Secure message sending failed:', error);
-            showNotification('Failed to send secure message', 'error');
+            console.error('❌ Message sending failed:', error);
+            showNotification('Failed to send message', 'error');
         }
     }
 
